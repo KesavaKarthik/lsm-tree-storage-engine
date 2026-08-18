@@ -1,0 +1,24 @@
+# Build trees. Generated, machine-specific, and hundreds of MB -- never committed.
+build/
+build-*/
+out/
+cmake-build-*/
+
+# CMake artefacts that escape the build tree
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# Data written by the engine during manual runs
+*.data
+*.hint
+testdb/
+kvstore-data/
+
+# Personal design journal
+NOTES.md
