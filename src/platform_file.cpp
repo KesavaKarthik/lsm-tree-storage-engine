@@ -12,6 +12,7 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -151,6 +152,67 @@ int rename_file(const std::filesystem::path& from, const std::filesystem::path& 
     return 0;
 }
 
+int map_readonly(int fd, std::uint64_t size, Mapping* out) {
+    if (out == nullptr || size == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    const HANDLE file = handle_for(fd);
+    if (file == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+
+    // Two objects, not one: a file-mapping object, then a view of it. The
+    // mapping object is what holds the reference to the file, which is why the
+    // caller may close `fd` afterwards.
+    const HANDLE mapping =
+        ::CreateFileMappingW(file, nullptr, PAGE_READONLY, static_cast<DWORD>(size >> 32),
+                             static_cast<DWORD>(size & 0xFFFFFFFFu), nullptr);
+    if (mapping == nullptr) {
+        set_errno_from_win32(::GetLastError());
+        return -1;
+    }
+
+    void* view = ::MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, static_cast<SIZE_T>(size));
+    if (view == nullptr) {
+        set_errno_from_win32(::GetLastError());
+        (void)::CloseHandle(mapping);
+        return -1;
+    }
+
+    out->data = static_cast<const std::uint8_t*>(view);
+    out->size = static_cast<std::size_t>(size);
+    out->handle = mapping;
+    return 0;
+}
+
+int unmap(Mapping& mapping) {
+    int rc = 0;
+    // Both, and in this order: the view is released first, then the object that
+    // was keeping the file open behind it.
+    if (mapping.data != nullptr && !::UnmapViewOfFile(mapping.data)) {
+        set_errno_from_win32(::GetLastError());
+        rc = -1;
+    }
+    if (mapping.handle != nullptr && !::CloseHandle(static_cast<HANDLE>(mapping.handle))) {
+        set_errno_from_win32(::GetLastError());
+        rc = -1;
+    }
+    mapping = Mapping{};
+    return rc;
+}
+
+int advise_random(const Mapping& mapping) {
+    // Deliberately a no-op, like sync_directory above, and for the same kind of
+    // reason: Windows has no per-mapping equivalent of madvise(MADV_RANDOM).
+    // PrefetchVirtualMemory is the opposite advice -- it is MADV_WILLNEED, an
+    // instruction to read *more* ahead -- and FILE_FLAG_RANDOM_ACCESS is a
+    // property of how the file was opened, not of a mapping. Claiming to have
+    // passed on the hint would be worse than admitting it went nowhere.
+    (void)mapping;
+    return 0;
+}
+
 #else  // POSIX
 
 int open_read_write(const std::filesystem::path& path) {
@@ -204,6 +266,47 @@ int rename_file(const std::filesystem::path& from, const std::filesystem::path& 
     // never to nothing. Any process holding the old file open keeps reading the
     // old inode, which stays alive until the last descriptor closes.
     return ::rename(from.c_str(), to.c_str());
+}
+
+int map_readonly(int fd, std::uint64_t size, Mapping* out) {
+    if (out == nullptr || size == 0) {
+        errno = EINVAL;  // mmap rejects a zero length, and so should we.
+        return -1;
+    }
+
+    // MAP_SHARED rather than MAP_PRIVATE: private would give copy-on-write
+    // semantics we have no use for, and would stop the pages being shared with
+    // every other reader of the same file. PROT_READ alone means a stray write
+    // through this pointer is a segfault rather than silent corruption of a
+    // table that is supposed to be immutable.
+    void* addr = ::mmap(nullptr, static_cast<std::size_t>(size), PROT_READ, MAP_SHARED, fd, 0);
+    if (addr == MAP_FAILED) {
+        return -1;  // mmap already set errno.
+    }
+
+    out->data = static_cast<const std::uint8_t*>(addr);
+    out->size = static_cast<std::size_t>(size);
+    out->handle = nullptr;
+    return 0;
+}
+
+int unmap(Mapping& mapping) {
+    int rc = 0;
+    if (mapping.data != nullptr) {
+        // const_cast because munmap takes void*; the mapping was never writable
+        // and nothing here writes through it.
+        rc = ::munmap(const_cast<std::uint8_t*>(mapping.data), mapping.size);
+    }
+    mapping = Mapping{};
+    return rc;
+}
+
+int advise_random(const Mapping& mapping) {
+    if (!mapping.is_valid()) {
+        errno = EINVAL;
+        return -1;
+    }
+    return ::madvise(const_cast<std::uint8_t*>(mapping.data), mapping.size, MADV_RANDOM);
 }
 
 #endif

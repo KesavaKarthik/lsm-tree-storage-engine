@@ -97,19 +97,28 @@ FetchContent_MakeAvailable(zlib)
 
 add_library(kvstore STATIC
     src/bitcask.cpp
+    src/bloom.cpp
     src/client.cpp
     src/compaction.cpp
     src/hint.cpp
     src/log_file.cpp
     src/locked_store.cpp
     src/log_scan.cpp
+    src/lsm.cpp
+    src/lsm_compaction.cpp
+    src/lsm_iterator.cpp
+    src/manifest.cpp
+    src/mapped_file.cpp
     src/memory_store.cpp
+    src/memtable.cpp
     src/platform_file.cpp
     src/platform_socket.cpp
     src/protocol.cpp
     src/record.cpp
     src/server.cpp
     src/socket.cpp
+    src/sstable.cpp
+    src/wal.cpp
 )
 add_library(kvstore::kvstore ALIAS kvstore)
 
@@ -157,6 +166,26 @@ target_compile_options(kv_cli PRIVATE ${KVSTORE_WARNING_FLAGS})
 # a hyphen because that is what a command-line tool looks like.
 set_target_properties(kv_cli PROPERTIES OUTPUT_NAME kv-cli)
 
+# The benchmark harness. Its own target rather than a test, because it measures
+# rather than asserts -- the amplification numbers it prints are the ones no test
+# can check and no README can honestly claim without running it.
+add_executable(kv_bench bench/bench_main.cpp)
+target_link_libraries(kv_bench PRIVATE kvstore::kvstore)
+target_compile_options(kv_bench PRIVATE ${KVSTORE_WARNING_FLAGS})
+
+# The comparative suite. Separate from kv_bench because it answers a different
+# question: kv_bench prints one snapshot for one configuration, this emits CSV
+# rows meant to be compared across a toggle, a build, or a machine.
+#
+# Always defined, even in a Debug tree, so this file keeps getting compiled --
+# but it refuses to *run* outside a Release build, which is why it needs to know
+# its own build type. $<CONFIG> covers both single- and multi-config generators.
+add_executable(kv_benchsuite bench/benchsuite_main.cpp)
+target_link_libraries(kv_benchsuite PRIVATE kvstore::kvstore)
+target_compile_options(kv_benchsuite PRIVATE ${KVSTORE_WARNING_FLAGS})
+target_compile_definitions(kv_benchsuite PRIVATE KVBENCH_BUILD_TYPE="$<CONFIG>")
+set_target_properties(kv_benchsuite PROPERTIES OUTPUT_NAME kv-benchsuite)
+
 if(KVSTORE_BUILD_TESTS)
 
     # Fetched at a pinned tag rather than find_package: a fresh checkout builds
@@ -176,15 +205,23 @@ if(KVSTORE_BUILD_TESTS)
 
     add_executable(kvstore_tests
         tests/bitcask_test.cpp
+        tests/bloom_test.cpp
         tests/compaction_test.cpp
         tests/framing_test.cpp
         tests/hint_test.cpp
         tests/locked_store_test.cpp
+        tests/lsm_compaction_test.cpp
+        tests/lsm_concurrency_test.cpp
+        tests/lsm_test.cpp
+        tests/manifest_test.cpp
         tests/memory_store_test.cpp
+        tests/memtable_test.cpp
+        tests/mmap_test.cpp
         tests/protocol_test.cpp
         tests/record_test.cpp
         tests/server_test.cpp
         tests/socket_test.cpp
+        tests/sstable_test.cpp
     )
 
     target_link_libraries(kvstore_tests
@@ -192,8 +229,11 @@ if(KVSTORE_BUILD_TESTS)
                 GTest::gtest_main
     )
 
-    # For kvstore_contract.hpp and temp_dir.hpp, shared between test files.
-    target_include_directories(kvstore_tests PRIVATE tests)
+    # tests/ for kvstore_contract.hpp and temp_dir.hpp, shared between test
+    # files. src/ so the tests can reach the engine's private headers -- the
+    # memory-mapping and merging-iterator types are deliberately not public, and
+    # testing them through six layers of engine would test the engine instead.
+    target_include_directories(kvstore_tests PRIVATE tests src)
 
     target_compile_options(kvstore_tests PRIVATE ${KVSTORE_WARNING_FLAGS})
 

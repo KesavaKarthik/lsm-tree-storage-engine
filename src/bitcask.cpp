@@ -142,7 +142,10 @@ Status Bitcask::recover() {
         // index without reading the values. Never for the active file: we are
         // about to append to it, so its size is about to stop matching anything
         // a hint could have recorded -- and no hint is ever written for it.
-        if (!is_active) {
+        //
+        // ignore_hints forces the full scan even where a hint exists. It is a
+        // measurement knob, not a recovery strategy: see BitcaskOptions.
+        if (!is_active && !options_.ignore_hints) {
             auto used_hint = replay_hint(id, it->second);
             if (!used_hint.is_ok()) {
                 return used_hint.status();

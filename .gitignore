@@ -7,18 +7,54 @@ cmake-build-*/
 # CMake artefacts that escape the build tree
 CMakeCache.txt
 CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
 compile_commands.json
+
+# Dependencies are fetched by CMake into the build tree. A local copy of zlib or
+# googletest in the source tree is a machine convenience, not part of the project.
+_deps/
+zlib-*/
+googletest-*/
+third_party/
+vendor/
 
 # Editor / IDE
 .vscode/
 .idea/
 *.swp
+*~
 
-# Data written by the engine during manual runs
+# Data written by the engines during manual runs.
+#
+# Bitcask writes .data and .hint; the LSM engine writes .sst, a .wal and a
+# MANIFEST. Anything matching these is a database this machine produced, not
+# source.
 *.data
 *.hint
+*.sst
+*.wal
+MANIFEST
+MANIFEST-*
+*.log
+
+# Database directories, whatever they end up called
 testdb/
 kvstore-data/
+demo-db/
+*-db/
+*.db/
+
+# Benchmark output. The harness measures rather than asserts, so its results
+# belong to the run and the machine, not the repository. Numbers worth keeping
+# go in the README with the conditions stated.
+bench-results/
+benchmarks/
+*.csv
+*.bench.json
+*.png
+*.svg
+*.pdf
 
 # Personal design journal
 NOTES.md

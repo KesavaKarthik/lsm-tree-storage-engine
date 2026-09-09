@@ -47,6 +47,13 @@ struct BitcaskOptions {
     // descriptor cache is the real one, and neither is needed yet.
     std::uint64_t max_file_size = 64ull << 20;
 
+    // Recover by scanning every data file end to end, ignoring the hint files
+    // beside them. Hints rebuild the same index without reading the values, so
+    // this is strictly slower -- it exists to measure how much they are worth,
+    // and the files stay on disk either way so both arms recover from a
+    // byte-identical directory. Leave it false outside a benchmark.
+    bool ignore_hints = false;
+
     // Test-only; see CompactionFailPoint.
     CompactionFailPoint fail_at = CompactionFailPoint::None;
 };

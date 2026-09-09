@@ -69,6 +69,54 @@ int close_fd(int fd);
 [[nodiscard]] int rename_file(const std::filesystem::path& from,
                               const std::filesystem::path& to);
 
+// --- Memory-mapped reads ---------------------------------------------------
+//
+// Only ever read-only, and only ever over a file nothing will modify again.
+// Both halves of that sentence are load-bearing.
+//
+// What a mapping buys: pread copies a page out of the kernel's cache into a
+// buffer the caller owns, which costs a syscall and a memcpy per read. A mapping
+// hands over the kernel's page itself -- no syscall, no copy, faulted in lazily
+// on first touch, and shared physically between every process mapping the same
+// file. For a table read over and over out of page cache that is most of the
+// cost gone.
+//
+// What it costs: an I/O error under a mapped page arrives as **SIGBUS**, not as
+// a return value. There is no errno to translate and no Status to hand back --
+// the process dies. Which is why the engine's default read path is still pread;
+// see the note on LsmOptions::read_mode.
+struct Mapping {
+    const std::uint8_t* data = nullptr;
+    std::size_t size = 0;
+
+    // Win32 needs a second object -- the file-mapping handle -- kept alive for
+    // as long as the view. Always null on POSIX, where the address is enough.
+    void* handle = nullptr;
+
+    [[nodiscard]] bool is_valid() const noexcept { return data != nullptr; }
+};
+
+// Maps the whole file read-only. `size` must be the file's real length and must
+// not be zero: neither platform can map an empty file.
+//
+// The mapping does **not** depend on `fd` afterwards. Both mmap() and
+// CreateFileMapping take their own reference to the underlying file, so the
+// caller may close the descriptor immediately and keep reading through the
+// mapping -- which is exactly what SSTable does.
+[[nodiscard]] int map_readonly(int fd, std::uint64_t size, Mapping* out);
+
+// Releases the mapping and resets `mapping` to empty. Idempotent.
+//
+// **This must happen before the file is unlinked on Windows**, which refuses to
+// remove a file that still has a live mapping -- the same rule, and the same
+// trap, as an open handle.
+int unmap(Mapping& mapping);
+
+// Tells the kernel the access pattern will be random, so it stops reading ahead.
+// Point lookups defeat readahead by construction: the next block wanted is
+// almost never the next block on disk.
+[[nodiscard]] int advise_random(const Mapping& mapping);
+
 // strerror(errno) for the call that just failed.
 [[nodiscard]] std::string last_error();
 

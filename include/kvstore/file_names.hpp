@@ -22,11 +22,27 @@ namespace kvstore {
 // unique address.
 using FileId = std::uint32_t;
 
-// What the files in a database directory are called:
+// What the files in a database directory are called.
+//
+// A Bitcask directory:
 //
 //   000001.log        data file, id 1
 //   000001.hint       index-only sidecar for data file 1 (compacted files only)
 //   000001.log.tmp    compaction output, not yet installed
+//
+// An LSM directory:
+//
+//   MANIFEST          which tables live at which level -- the commit point
+//   000003.wal        write-ahead log backing the current memtable
+//   000001.sst        sorted string table, id 1 (higher id == newer)
+//   000004.sst.tmp    flush or compaction output, not yet installed
+//   MANIFEST.tmp      a level set being committed
+//
+// The two engines never share a directory, but they deliberately share this
+// header: id padding, the temp-name convention and the "parse strictly, ignore
+// what you don't understand" rule are properties of *this project's* on-disk
+// naming, not of either engine. Two engines in one codebase disagreeing about
+// what a filename means is exactly the bug this prevents.
 //
 // Zero-padded so `ls` sorts the way a human expects, but ids are always parsed
 // and compared as *numbers*. Nothing may depend on the lexicographic order:
@@ -34,7 +50,13 @@ using FileId = std::uint32_t;
 // silently stops agreeing at 1000000.
 inline constexpr std::string_view kLogSuffix = ".log";
 inline constexpr std::string_view kHintSuffix = ".hint";
+inline constexpr std::string_view kTableSuffix = ".sst";
+inline constexpr std::string_view kWalSuffix = ".wal";
 inline constexpr std::string_view kTempSuffix = ".tmp";
+
+// The only file here with a name rather than a number, because there is only
+// ever one of it and its name has to be findable without reading anything else.
+inline constexpr std::string_view kManifestName = "MANIFEST";
 inline constexpr std::size_t kFileIdDigits = 6;
 
 // Ids start at 1, so 0 can mean "no file" in a default-constructed pointer.
@@ -91,6 +113,19 @@ inline std::optional<FileId> parse_id_with_suffix(std::string_view filename,
     return detail::pad_file_id(id) + std::string{kHintSuffix};
 }
 
+// The LSM engine draws table ids and WAL ids from *one* counter, so a directory
+// never holds a 000004.sst and a 000004.wal at the same time. That is not an
+// economy -- it is what makes "higher id means newer" a single total order over
+// everything the engine has ever written, which is the same rule Bitcask uses to
+// decide which of two records wins.
+[[nodiscard]] inline std::string sst_file_name(FileId id) {
+    return detail::pad_file_id(id) + std::string{kTableSuffix};
+}
+
+[[nodiscard]] inline std::string wal_file_name(FileId id) {
+    return detail::pad_file_id(id) + std::string{kWalSuffix};
+}
+
 // The in-progress name a file is written under before it is renamed into place.
 [[nodiscard]] inline std::string temp_name(std::string_view final_name) {
     return std::string{final_name} + std::string{kTempSuffix};
@@ -111,6 +146,14 @@ inline std::optional<FileId> parse_id_with_suffix(std::string_view filename,
     return detail::parse_id_with_suffix(filename, kHintSuffix);
 }
 
+[[nodiscard]] inline std::optional<FileId> parse_sst_file_id(std::string_view filename) {
+    return detail::parse_id_with_suffix(filename, kTableSuffix);
+}
+
+[[nodiscard]] inline std::optional<FileId> parse_wal_file_id(std::string_view filename) {
+    return detail::parse_id_with_suffix(filename, kWalSuffix);
+}
+
 // A file this engine was in the middle of writing when it stopped.
 //
 // Recognised narrowly -- it must be one of *our* names with .tmp on the end --
@@ -124,7 +167,9 @@ inline std::optional<FileId> parse_id_with_suffix(std::string_view filename,
         return false;
     }
     const std::string_view stem = filename.substr(0, filename.size() - kTempSuffix.size());
-    return parse_log_file_id(stem).has_value() || parse_hint_file_id(stem).has_value();
+    return stem == kManifestName || parse_log_file_id(stem).has_value() ||
+           parse_hint_file_id(stem).has_value() || parse_sst_file_id(stem).has_value() ||
+           parse_wal_file_id(stem).has_value();
 }
 
 }  // namespace kvstore
